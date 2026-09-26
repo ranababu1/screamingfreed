@@ -78,27 +78,3 @@ The deployment is plain zero-config: `index.html` + `app.js` are served as
 static assets from the project root, `api/` becomes serverless functions, and
 `.vercelignore` keeps private files (like your URL lists) out of the
 deployment.
-
-Deploy from the project folder:
-
-```bash
-npm i -g vercel   # once
-vercel            # preview deployment, accept the defaults
-vercel --prod     # production deployment
-```
-
-Optional hardening — require a shared token on the API:
-
-```bash
-vercel env add AUDIT_TOKEN
-```
-
-Then enter the same value in the UI's "API token" field (requests without the
-matching `x-audit-token` header are rejected with 401).
-
-Local development of the web UI:
-
-```bash
-npm run dev        # http://127.0.0.1:3000 — static UI + local /api/audit (no Vercel login needed)
-npx vercel dev     # alternative: the full Vercel runtime (requires login)
-```
