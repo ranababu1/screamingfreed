@@ -52,7 +52,8 @@ npm run build          # tsc -> dist/
 npm test               # vitest
 npm run lint           # eslint
 npm run typecheck:api  # type-check the Vercel serverless function
-npm run dev            # tsx src/cli.ts (pass args after --)
+npm run dev            # web UI + local API at http://127.0.0.1:3000
+npm run dev:cli -- --file allurls.csv   # run the CLI without building first
 ```
 
 ## Web UI on Vercel
@@ -98,5 +99,6 @@ matching `x-audit-token` header are rejected with 401).
 Local development of the web UI:
 
 ```bash
-npx vercel dev    # serves the static UI and api/ locally
+npm run dev        # http://127.0.0.1:3000 — static UI + local /api/audit (no Vercel login needed)
+npx vercel dev     # alternative: the full Vercel runtime (requires login)
 ```

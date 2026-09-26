@@ -4,5 +4,5 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["api", "src"]
+  "include": ["api", "scripts", "src"]
 }
