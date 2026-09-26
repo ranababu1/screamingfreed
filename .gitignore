@@ -9,3 +9,6 @@ report.csv
 
 # Personal seed URL lists — keep them out of the repository
 allurls.*
+
+# Generated web output (created by npm run build, served on Vercel)
+public/

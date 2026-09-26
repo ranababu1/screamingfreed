@@ -74,7 +74,8 @@ results as JSON. This design fits serverless constraints:
 - per request: at most 12 seeds, soft deadline 40s, function `maxDuration` 60s
   (Hobby tier compatible)
 
-The deployment is plain zero-config: `index.html` + `app.js` are served as
-static assets from the project root, `api/` becomes serverless functions, and
-`.vercelignore` keeps private files (like your URL lists) out of the
-deployment.
+The deployment build is explicit and framework-agnostic: `npm run build`
+compiles the CLI (`tsc` → `dist/`) and copies `index.html` + `app.js` into
+`public/`, which `vercel.json` declares as the output directory. Only that
+directory is exposed as static assets, and `.vercelignore` keeps private files
+(like your URL lists) out of the upload.
