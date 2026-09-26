@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScreamingFreed — WordPress link auditor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --bad: #f85149;
+      --err: #bc8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    header { max-width: 880px; margin: 0 auto 16px; }
+    header h1 { margin: 0 0 4px; font-size: 26px; }
+    header p { margin: 0; color: var(--muted); }
+    main { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 17px; }
+    label { display: block; margin-bottom: 12px; color: var(--muted); font-size: 13px; }
+    input[type="number"], input[type="password"], textarea, select {
+      width: 100%;
+      margin-top: 4px;
+      padding: 8px 10px;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font: inherit;
+    }
+    textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+    input[type="file"] { margin-top: 4px; color: var(--text); }
+    .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .settings label { margin: 0; }
+    .buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      padding: 9px 18px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #21262d;
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #30363d; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #start { background: var(--accent); border-color: var(--accent); color: #fff; }
+    #stop { background: #6e2c2c; border-color: #8a3b3b; }
+    #status { margin-top: 14px; color: var(--muted); min-height: 22px; font-size: 14px; }
+    #status.warn { color: var(--warn); }
+    #status.error { color: var(--bad); }
+    #status.good { color: var(--ok); }
+    .progress {
+      margin-top: 10px;
+      height: 10px;
+      background: #21262d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    #bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.3s; }
+    #counters { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #21262d;
+      font-size: 13px;
+    }
+    .badge b { font-weight: 700; }
+    .badge.ok b { color: var(--ok); }
+    .badge.warn b { color: var(--warn); }
+    .badge.bad b { color: var(--bad); }
+    .badge.err b { color: var(--err); }
+    .log {
+      max-height: 320px;
+      overflow-y: auto;
+      font: 12.5px/1.7 ui-monospace, Consolas, monospace;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .log .s2 { color: var(--ok); }
+    .log .s3 { color: var(--warn); }
+    .log .s4 { color: var(--bad); }
+    .log .se { color: var(--err); }
+    .log .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 4px; }
+    th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); word-break: break-all; }
+    th { color: var(--muted); font-weight: 600; }
+    .muted { color: var(--muted); }
+    footer { max-width: 880px; margin: 16px auto 0; color: var(--muted); font-size: 12.5px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ScreamingFreed</h1>
+    <p>Audit the hyperlinks inside the article body of WordPress pages. Upload your URL list, download a report.</p>
+  </header>
+  <main>
+    <section class="card">
+      <label>Seed URLs file (.csv — first column used — or .txt, one URL per line)
+        <input type="file" id="file" accept=".csv,.txt">
+      </label>
+      <label>…or paste URLs (comma or newline separated)
+        <textarea id="urls" rows="4" placeholder="https://imraan.in/how-to/how-to-access-blocked-websites/&#10;https://imraan.in/android/install-ubuntu-debian-android-phone/"></textarea>
+      </label>
+      <div class="settings">
+        <label>Requests/sec per host
+          <input type="number" id="rps" value="5" min="0.1" max="20" step="0.5">
+        </label>
+        <label>Concurrency
+          <input type="number" id="concurrency" value="10" min="1" max="10" step="1">
+        </label>
+        <label>Timeout (s)
+          <input type="number" id="timeout" value="10" min="1" max="15" step="1">
+        </label>
+        <label>Pages per batch
+          <input type="number" id="batch" value="3" min="1" max="12" step="1">
+        </label>
+        <label>Scope
+          <select id="scope">
+            <option value="">All links</option>
+            <option value="internal">Internal only</option>
+            <option value="external">External only</option>
+          </select>
+        </label>
+        <label>API token (optional)
+          <input type="password" id="token" placeholder="if the server requires one">
+        </label>
+      </div>
+      <div class="buttons">
+        <button id="start">Start audit</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+      <div id="status"></div>
+      <div class="progress"><div id="bar"></div></div>
+      <div id="counters"></div>
+    </section>
+    <section class="card" id="resultsCard" hidden>
+      <h2>Summary</h2>
+      <div id="summary"></div>
+      <div class="buttons" style="margin-top:14px">
+        <button id="csv">Download CSV</button>
+        <button id="json">Download JSON</button>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Live log</h2>
+      <div id="log" class="log"><div class="muted">Nothing yet — start an audit.</div></div>
+    </section>
+  </main>
+  <footer>
+    Large audits run in small batches; each batch must finish within the serverless time limit,
+    so pages with a huge number of links may need a few retries. Results live in your browser —
+    nothing is stored on the server.
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

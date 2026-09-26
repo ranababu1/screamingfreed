@@ -1,0 +1,7 @@
+# Files that must not be part of the Vercel deployment.
+# (Static assets served from the project root would otherwise expose these.)
+plan.md
+README.md
+allurls.*
+dist/
+tests/
