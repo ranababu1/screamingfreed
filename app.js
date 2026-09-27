@@ -181,6 +181,16 @@
     renderCounters();
   }
 
+  function countFailedPages(pages) {
+    let count = 0;
+    for (const page of pages.values()) {
+      if (page.selectorUsed === null) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   function renderCounters() {
     const buckets = { s2: 0, s3: 0, s4: 0, se: 0 };
     for (const link of state.links.values()) {
@@ -193,6 +203,7 @@
       ['3xx', String(buckets.s3), 'warn'],
       ['4xx/5xx', String(buckets.s4), 'bad'],
       ['network errors', String(buckets.se), 'err'],
+      ['page errors', String(countFailedPages(state.pages)), 'err'],
     ];
     countersEl.textContent = '';
     for (const [label, value, cls] of badges) {
@@ -387,6 +398,27 @@
       `Pages audited: ${snapshot.pages.size} — Links checked: ${snapshot.links.size}`;
     summaryEl.appendChild(totals);
 
+    const failedPages = [...snapshot.pages.values()].filter(
+      (page) => page.selectorUsed === null,
+    );
+    if (failedPages.length > 0) {
+      const warning = document.createElement('p');
+      warning.className = 'warn';
+      warning.textContent =
+        `${failedPages.length} page(s) could not be fetched or had no recognizable ` +
+        'article body — their links were never checked (often a firewall/bot-protection ' +
+        'block on the target site; check the status codes below).';
+      summaryEl.appendChild(warning);
+      summaryEl.appendChild(
+        makeTable(
+          ['page', 'http status'],
+          failedPages
+            .slice(0, 20)
+            .map((page) => [page.url, page.httpStatus === null ? '' : String(page.httpStatus)]),
+        ),
+      );
+    }
+
     const counts = new Map();
     for (const link of snapshot.links.values()) {
       counts.set(link.outcome, (counts.get(link.outcome) || 0) + 1);
@@ -433,9 +465,13 @@
         item.examplePage,
       ]);
     const brokenHeading = document.createElement('p');
-    brokenHeading.textContent = brokenRows.length > 0
-      ? 'Broken links (top 20):'
-      : 'No broken links found.';
+    if (brokenRows.length > 0) {
+      brokenHeading.textContent = 'Broken links (top 20):';
+    } else if (snapshot.links.size === 0) {
+      brokenHeading.textContent = 'No links were checked.';
+    } else {
+      brokenHeading.textContent = 'No broken links found.';
+    }
     summaryEl.appendChild(brokenHeading);
     if (brokenRows.length > 0) {
       summaryEl.appendChild(

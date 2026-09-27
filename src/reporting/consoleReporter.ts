@@ -9,13 +9,19 @@
 import chalk from 'chalk';
 import cliProgress from 'cli-progress';
 import type { LinkCheckResult } from '../crawling/types.js';
-import type { BrokenLinkRow, OutcomeCount } from '../storage/sqliteStore.js';
+import type {
+  BrokenLinkRow,
+  FailedPageRow,
+  OutcomeCount,
+} from '../storage/sqliteStore.js';
 
 export interface AuditSummary {
   totalPages: number;
   totalLinks: number;
   outcomeCounts: OutcomeCount[];
   brokenLinks: BrokenLinkRow[];
+  failedPageCount: number;
+  failedPages: FailedPageRow[];
 }
 
 export class ConsoleReporter {
@@ -96,6 +102,15 @@ export class ConsoleReporter {
     this.info(`  Pages audited: ${chalk.cyan(String(summary.totalPages))}`);
     this.info(`  Links checked: ${chalk.cyan(String(summary.totalLinks))}`);
     this.info('');
+    if (summary.failedPageCount > 0) {
+      this.warn(
+        `  ${summary.failedPageCount} page(s) could not be fetched or had no ` +
+          'recognizable article body — their links were never checked ' +
+          '(often a firewall/bot-protection block; check the status codes below).',
+      );
+      console.table(summary.failedPages);
+      this.info('');
+    }
     if (summary.outcomeCounts.length === 0) {
       this.info('  No links were checked.');
     } else {

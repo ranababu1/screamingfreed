@@ -72,6 +72,11 @@ export interface BrokenLinkRow {
   example_page: string;
 }
 
+export interface FailedPageRow {
+  url: string;
+  http_status: number | null;
+}
+
 export class SqliteStore {
   private readonly db: Database.Database;
   private readonly upsertPageStatement: Database.Statement;
@@ -203,6 +208,25 @@ export class SqliteStore {
          LIMIT ?`,
       )
       .all(limit) as BrokenLinkRow[];
+  }
+
+  /** Pages whose article body could not be fetched or isolated (no content to check). */
+  countFailedPages(): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS count FROM pages WHERE selector_used IS NULL')
+      .get() as { count: number };
+    return row.count;
+  }
+
+  getFailedPages(limit: number): FailedPageRow[] {
+    return this.db
+      .prepare(
+        `SELECT url, http_status FROM pages
+         WHERE selector_used IS NULL
+         ORDER BY id
+         LIMIT ?`,
+      )
+      .all(limit) as FailedPageRow[];
   }
 
   getAllLinkRows(): LinkCsvRow[] {

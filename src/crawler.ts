@@ -201,6 +201,8 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
     totalLinks: store.countLinks(),
     outcomeCounts: store.getOutcomeCounts(),
     brokenLinks: store.getBrokenLinks(20),
+    failedPageCount: store.countFailedPages(),
+    failedPages: store.getFailedPages(20),
   });
   if (options.exportPath !== undefined) {
     const exported = exportCsv(store.getAllLinkRows(), options.exportPath);

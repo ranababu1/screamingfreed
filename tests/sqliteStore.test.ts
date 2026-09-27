@@ -57,6 +57,26 @@ describe('SqliteStore pages', () => {
     expect(id2).toBe(id1); // same URL -> same row
     expect(store.countPages()).toBe(1);
   });
+
+  it('reports pages whose article body could not be fetched or isolated', () => {
+    store.recordPage({
+      url: 'https://example.com/ok',
+      httpStatus: 200,
+      selectorUsed: '.entry-content',
+      fetchedAt: FETCHED_AT,
+    });
+    store.recordPage({
+      url: 'https://example.com/blocked',
+      httpStatus: 403,
+      selectorUsed: null,
+      fetchedAt: FETCHED_AT,
+    });
+
+    expect(store.countFailedPages()).toBe(1);
+    expect(store.getFailedPages(20)).toEqual([
+      { url: 'https://example.com/blocked', http_status: 403 },
+    ]);
+  });
 });
 
 describe('SqliteStore link batching', () => {

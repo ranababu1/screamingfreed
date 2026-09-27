@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A page whose fetch failed or whose article body could not be isolated
+  (e.g. blocked by the target site's firewall/bot protection) was silently
+  counted as fully audited with zero links, in both the CLI and the web UI —
+  a total block looked identical to "no broken links found." Both surfaces
+  now report a distinct "page fetch failures" count with example URLs and
+  status codes (`SqliteStore.countFailedPages`/`getFailedPages`, a new
+  console-summary block, and a "page errors" badge plus warning table in the
+  web UI), and the web summary now distinguishes "no links were checked"
+  from "no broken links found."
+
 ## [1.0.0] - 2026-09-26
 
 Initial release: a WordPress article-body link auditor with both a Node.js CLI
