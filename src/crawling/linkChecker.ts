@@ -9,19 +9,32 @@
  *   retried once; without the header a 5 second backoff is used.
  * - Every request (including redirect hops) goes through the shared
  *   per-host token bucket limiter and a per-request abort timeout.
+ * - Requests carry a browser-like header set (see requestProfile.ts) and may
+ *   go through an HTTP(S) proxy, so WAFs such as Cloudflare do not reject
+ *   them on sight.
+ * - Bot-protection challenges/blocks (see botProtection.ts) are reported as
+ *   the distinct `bot_protection` outcome instead of a broken 403/503, and,
+ *   when a browser fallback is configured, re-fetched with a real browser
+ *   whose earned cookies are then reused for the rest of that host.
  */
 
-import { Agent, request } from 'undici';
+import { Agent, ProxyAgent, request } from 'undici';
 import type { Dispatcher } from 'undici';
+import { BOT_PROTECTION_OUTCOME, isBotChallenge, shouldInspectBody } from './botProtection.js';
+import { RequestProfile } from './requestProfile.js';
 import { TokenBucketRateLimiter } from './tokenBucket.js';
 import type {
+  BrowserFallback,
   HttpMethod,
   LinkCheckResult,
   NetworkOutcome,
   PageFetchResult,
 } from './types.js';
 
-export const USER_AGENT = 'ScreamingFreed/1.0 (+https://example.com/bot)';
+/** Statuses on which a HEAD check is repeated with GET (servers/WAFs that mishandle HEAD). */
+const HEAD_RETRY_STATUSES: ReadonlySet<number> = new Set([400, 403, 405, 406, 501]);
+/** Upper bound on body bytes kept when inspecting a possible challenge page. */
+const MAX_INSPECTED_BODY_CHARS = 64_000;
 
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECT_HOPS = 5;
@@ -43,12 +56,19 @@ export interface LinkCheckerOptions {
   dispatcher?: Dispatcher;
   /** Optional verbose logger. */
   log?: (message: string) => void;
+  /** User-Agent / header identity. Defaults to a desktop Chrome profile. */
+  profile?: RequestProfile;
+  /** Route every request through this HTTP(S) proxy (ignored with `dispatcher`). */
+  proxyUrl?: string;
+  /** Real-browser fallback used when bot protection blocks a request. */
+  browserFallback?: BrowserFallback;
 }
 
 interface ResponseData {
   statusCode: number;
   headers: Record<string, string | string[] | undefined>;
   bodyText: string | null;
+  challenged: boolean;
 }
 
 type ChainResult =
@@ -61,6 +81,7 @@ type ChainResult =
       bodyText: string | null;
       contentType: string | null;
       retryAfterMs: number | null;
+      challenged: boolean;
     }
   | { kind: 'error'; error: unknown; hops: number; method: HttpMethod }
   | { kind: 'too_many_redirects'; hops: number; method: HttpMethod };
@@ -71,6 +92,12 @@ export class LinkChecker {
   private readonly ownsDispatcher: boolean;
   private readonly timeoutMs: number;
   private readonly log: (message: string) => void;
+  private readonly profile: RequestProfile;
+  private readonly browserFallback: BrowserFallback | null;
+  /** Cookies earned by the browser fallback, keyed by host. */
+  private readonly cookieJar = new Map<string, string>();
+  /** Hosts whose cookies were already harvested (or attempted). */
+  private readonly harvestedHosts = new Set<string>();
   private stopped = false;
   private disposed = false;
   private readonly shutdownWaiters: Array<() => void> = [];
@@ -78,11 +105,19 @@ export class LinkChecker {
   constructor(options: LinkCheckerOptions) {
     this.timeoutMs = options.timeoutMs;
     this.log = options.log ?? ((): void => {});
+    this.profile = options.profile ?? new RequestProfile();
+    this.browserFallback = options.browserFallback ?? null;
     this.limiter =
       options.limiter ?? new TokenBucketRateLimiter(options.requestsPerSecond ?? 2);
     if (options.dispatcher !== undefined) {
       this.dispatcher = options.dispatcher;
       this.ownsDispatcher = false;
+    } else if (options.proxyUrl !== undefined && options.proxyUrl.length > 0) {
+      // Route through a proxy (e.g. a residential/ISP proxy when the crawler
+      // runs on a datacenter IP that Cloudflare scores as a bot). Redirects
+      // stay manual exactly as with the plain Agent.
+      this.dispatcher = new ProxyAgent(options.proxyUrl);
+      this.ownsDispatcher = true;
     } else {
       // Pooled shared agent. Automatic redirect following stays disabled
       // (undici never follows redirects unless an interceptor is installed),
@@ -113,6 +148,11 @@ export class LinkChecker {
     }
   }
 
+  /** Set cookies to send to `host` (e.g. a `cf_clearance` cookie from a real browser). */
+  setHostCookies(host: string, cookie: string): void {
+    this.cookieJar.set(host.toLowerCase(), cookie);
+  }
+
   /** Check a single target URL with the full HEAD/GET and retry logic. */
   async checkLink(targetUrl: string): Promise<LinkCheckResult> {
     let method: HttpMethod = 'HEAD';
@@ -123,9 +163,11 @@ export class LinkChecker {
       result = await this.followChain(targetUrl, method, false);
     } else if (
       result.kind === 'response' &&
-      (result.status === 405 || result.status === 501)
+      (HEAD_RETRY_STATUSES.has(result.status) || result.challenged)
     ) {
-      this.log(`HEAD not allowed (${result.status}) for ${targetUrl}; retrying with GET`);
+      // Many WAFs (Cloudflare included) and CDNs reject HEAD outright; a GET
+      // is what a browser sends, so it is the authoritative answer.
+      this.log(`HEAD answered ${result.status} for ${targetUrl}; retrying with GET`);
       method = 'GET';
       result = await this.followChain(targetUrl, method, false);
     }
@@ -137,12 +179,68 @@ export class LinkChecker {
         result = await this.followChain(targetUrl, method, false);
       }
     }
+    if (result.kind === 'response' && result.challenged) {
+      const host = new URL(result.finalUrl).host;
+      if (await this.harvestBrowserCookies(host)) {
+        result = await this.followChain(targetUrl, 'GET', false);
+      }
+    }
+    if (
+      result.kind === 'response' &&
+      result.challenged &&
+      this.browserFallback !== null &&
+      !this.stopped
+    ) {
+      this.log(`Bot protection on ${targetUrl}; verifying with the browser fallback`);
+      try {
+        return await this.browserFallback.checkLink(targetUrl);
+      } catch (error) {
+        this.log(`Browser fallback failed for ${targetUrl}: ${String(error)}`);
+      }
+    }
     return this.toLinkCheckResult(targetUrl, result);
   }
 
-  /** GET a seed page (following redirects), returning its HTML when available. */
+  /**
+   * GET a seed page (following redirects), returning its HTML when
+   * available. When bot protection blocks the request and a browser
+   * fallback is configured, the page is loaded in the browser instead and
+   * the cookies it earns are reused for further requests to that host.
+   */
   async fetchPage(url: string): Promise<PageFetchResult> {
-    const result = await this.followChain(url, 'GET', true);
+    let result = await this.followChain(url, 'GET', true);
+    if (
+      result.kind === 'response' &&
+      result.challenged &&
+      this.browserFallback !== null &&
+      !this.stopped
+    ) {
+      const host = new URL(result.finalUrl).host;
+      this.log(`Bot protection on ${url} (HTTP ${result.status}); loading it in a browser`);
+      let rendered: PageFetchResult | null = null;
+      try {
+        rendered = await this.browserFallback.fetchPage(url);
+      } catch (error) {
+        this.log(`Browser fallback failed for ${url}: ${String(error)}`);
+      }
+      if (rendered !== null && rendered.html !== null) {
+        await this.harvestBrowserCookies(host, true);
+        return rendered;
+      }
+      // The browser could not get through either; try once more over HTTP
+      // in case it still earned a clearance cookie.
+      if (await this.harvestBrowserCookies(host, true)) {
+        result = await this.followChain(url, 'GET', true);
+      }
+    }
+    if (result.kind === 'response' && result.challenged) {
+      return {
+        finalUrl: result.finalUrl,
+        httpStatus: result.status,
+        html: null,
+        error: BOT_PROTECTION_OUTCOME,
+      };
+    }
     if (result.kind === 'response') {
       const contentType = result.contentType ?? '';
       if (result.bodyText !== null && !contentType.toLowerCase().includes('html')) {
@@ -226,8 +324,32 @@ export class LinkChecker {
         bodyText: response.bodyText,
         contentType,
         retryAfterMs,
+        challenged: response.challenged,
       };
     }
+  }
+
+  /**
+   * Copy the browser fallback's cookies for `host` into the cookie jar.
+   * Returns true when new cookies were stored. Each host is harvested once
+   * unless `force` is set (after the browser just visited it).
+   */
+  private async harvestBrowserCookies(host: string, force = false): Promise<boolean> {
+    if (this.browserFallback === null || (!force && this.harvestedHosts.has(host))) {
+      return false;
+    }
+    this.harvestedHosts.add(host);
+    try {
+      const cookie = await this.browserFallback.cookiesFor(host);
+      if (cookie !== null && cookie.length > 0 && cookie !== this.cookieJar.get(host)) {
+        this.cookieJar.set(host, cookie);
+        this.log(`Reusing browser cookies for ${host}`);
+        return true;
+      }
+    } catch (error) {
+      this.log(`Could not read browser cookies for ${host}: ${String(error)}`);
+    }
+    return false;
   }
 
   private async requestOnce(
@@ -235,26 +357,45 @@ export class LinkChecker {
     method: HttpMethod,
     collectBody: boolean,
   ): Promise<ResponseData> {
-    await this.limiter.acquire(new URL(url).host);
+    const host = new URL(url).host;
+    await this.limiter.acquire(host);
     const response = await request(url, {
       method,
       dispatcher: this.dispatcher,
-      headers: { 'user-agent': USER_AGENT },
+      headers: this.profile.headersFor(this.cookieJar.get(host) ?? null),
       // Per-request timeout; undici does not follow redirects by default,
       // which keeps every hop of a redirect chain visible.
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     let bodyText: string | null = null;
+    let inspected: string | null = null;
     if (collectBody) {
       bodyText = await response.body.text();
+      inspected = bodyText;
+    } else if (method === 'GET' && shouldInspectBody(response.statusCode)) {
+      // Read the (small) error body so a challenge page can be recognized.
+      inspected = (await response.body.text()).slice(0, MAX_INSPECTED_BODY_CHARS);
     } else {
       // Drain the body so the pooled socket can be reused.
       await response.body.dump();
     }
-    return { statusCode: response.statusCode, headers: response.headers, bodyText };
+    const challenged = isBotChallenge(response.statusCode, response.headers, inspected);
+    return { statusCode: response.statusCode, headers: response.headers, bodyText, challenged };
   }
 
   private toLinkCheckResult(targetUrl: string, result: ChainResult): LinkCheckResult {
+    if (result.kind === 'response' && result.challenged) {
+      // The status is kept for transparency, but the outcome says the link
+      // could not be verified rather than that it is broken.
+      return {
+        targetUrl,
+        finalUrl: result.finalUrl,
+        httpStatus: result.status,
+        outcome: BOT_PROTECTION_OUTCOME,
+        redirectHops: result.hops,
+        methodUsed: result.method,
+      };
+    }
     if (result.kind === 'response') {
       return {
         targetUrl,

@@ -74,7 +74,7 @@ describe('SqliteStore pages', () => {
 
     expect(store.countFailedPages()).toBe(1);
     expect(store.getFailedPages(20)).toEqual([
-      { url: 'https://example.com/blocked', http_status: 403 },
+      { url: 'https://example.com/blocked', http_status: 403, reason: null },
     ]);
   });
 });
@@ -167,5 +167,61 @@ describe('SqliteStore reporting queries', () => {
     expect(rows).toHaveLength(4);
     expect(rows[0].page_url).toBe('https://example.com/page');
     expect(rows[0].target_url).toBe('https://example.com/broken-a');
+  });
+
+  it('keeps bot-protected links out of the broken list and counts them', () => {
+    const pageId = store.recordPage({
+      url: 'https://example.com/post',
+      httpStatus: 200,
+      selectorUsed: '.entry-content',
+      fetchedAt: FETCHED_AT,
+    });
+    store.recordLink(makeLink(pageId, '/gone', { httpStatus: 404, outcome: '404' }));
+    store.recordLink(
+      makeLink(pageId, '/cf', { httpStatus: 403, outcome: 'bot_protection' }),
+    );
+    store.flush();
+
+    expect(store.getBrokenLinks(20).map((row) => row.target_url)).toEqual([
+      'https://example.com/gone',
+    ]);
+    expect(store.countBlockedLinks()).toBe(1);
+  });
+
+  it('records why a page could not be fetched', () => {
+    store.recordPage({
+      url: 'https://example.com/cf',
+      httpStatus: 403,
+      selectorUsed: null,
+      fetchedAt: FETCHED_AT,
+      fetchError: 'bot_protection',
+    });
+
+    expect(store.getFailedPages(20)).toEqual([
+      { url: 'https://example.com/cf', http_status: 403, reason: 'bot_protection' },
+    ]);
+  });
+});
+
+describe('SqliteStore migration', () => {
+  it('adds fetch_error to session databases created before it existed', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const legacyPath = join(dir, 'legacy.db');
+    const legacy = new Database(legacyPath);
+    legacy.exec(`CREATE TABLE pages (
+      id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, http_status INTEGER,
+      selector_used TEXT, fetched_at TEXT NOT NULL)`);
+    legacy.close();
+
+    const migrated = new SqliteStore(legacyPath);
+    migrated.recordPage({
+      url: 'https://example.com/x',
+      httpStatus: 503,
+      selectorUsed: null,
+      fetchedAt: FETCHED_AT,
+      fetchError: 'bot_protection',
+    });
+    expect(migrated.getFailedPages(5)[0]?.reason).toBe('bot_protection');
+    migrated.close();
   });
 });

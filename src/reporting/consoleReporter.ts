@@ -22,6 +22,9 @@ export interface AuditSummary {
   brokenLinks: BrokenLinkRow[];
   failedPageCount: number;
   failedPages: FailedPageRow[];
+  /** Link rows a bot-protection layer refused (unverified, not broken). */
+  blockedLinkCount?: number;
+  browserFallbackEnabled?: boolean;
 }
 
 export class ConsoleReporter {
@@ -111,6 +114,21 @@ export class ConsoleReporter {
       console.table(summary.failedPages);
       this.info('');
     }
+    const blockedPages = summary.failedPages.filter(
+      (page) => page.reason === 'bot_protection',
+    ).length;
+    const blockedLinks = summary.blockedLinkCount ?? 0;
+    if (blockedPages > 0 || blockedLinks > 0) {
+      this.warn(
+        `  Bot protection (e.g. Cloudflare) blocked ${blockedPages} page(s) and ` +
+          `${blockedLinks} link check(s). Blocked links are listed as ` +
+          '"bot_protection" (unverified), not as broken.',
+      );
+      for (const hint of botProtectionHints(summary.browserFallbackEnabled === true)) {
+        this.warn(`    - ${hint}`);
+      }
+      this.info('');
+    }
     if (summary.outcomeCounts.length === 0) {
       this.info('  No links were checked.');
     } else {
@@ -128,10 +146,42 @@ export class ConsoleReporter {
   }
 }
 
+/** Ways around a bot-protection block, most effective first. */
+export function botProtectionHints(browserFallbackEnabled: boolean): string[] {
+  const hints: string[] = [];
+  if (browserFallbackEnabled) {
+    hints.push(
+      'Retry with --render headful to solve interactive challenges in a visible browser window.',
+    );
+  } else {
+    hints.push(
+      'Enable the real-browser fallback: npm install playwright && ' +
+        'npx playwright install chromium (then it is used automatically, or force --render headful).',
+    );
+  }
+  hints.push(
+    'For your own site: add a Cloudflare WAF "Skip" rule for a secret header and pass it ' +
+      'with --header "X-Audit-Key: <secret>" (or allowlist your IP).',
+  );
+  hints.push(
+    'Run from a residential/office IP (datacenter IPs score as bots) or route through ' +
+      '--proxy http://user:pass@host:port.',
+  );
+  hints.push(
+    'Reuse a browser session: copy the cf_clearance cookie and your browser\'s exact ' +
+      'User-Agent into --cookie and --user-agent (same IP required).',
+  );
+  return hints;
+}
+
 /** One console line per checked link, color coded by result class. */
 function formatLinkLine(result: LinkCheckResult): string {
   const status =
-    result.httpStatus !== null ? String(result.httpStatus) : result.outcome;
+    result.outcome === 'bot_protection'
+      ? `blocked ${result.httpStatus ?? ''}`.trim()
+      : result.httpStatus !== null
+        ? String(result.httpStatus)
+        : result.outcome;
   const parts = [colorFor(result)(status.padEnd(14)), result.targetUrl];
   if (result.finalUrl !== null && result.finalUrl !== result.targetUrl) {
     parts.push(chalk.gray(`-> ${result.finalUrl}`));
@@ -148,6 +198,9 @@ function formatLinkLine(result: LinkCheckResult): string {
 
 /** green 2xx, yellow 3xx, red 4xx/5xx, magenta network errors. */
 function colorFor(result: LinkCheckResult): (text: string) => string {
+  if (result.outcome === 'bot_protection') {
+    return chalk.blue;
+  }
   if (result.httpStatus === null) {
     return chalk.magenta;
   }

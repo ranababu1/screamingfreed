@@ -7,15 +7,25 @@
  * body: { seedUrls: string[], skipTargets?: string[], requestsPerSecond?,
  *         concurrency?, timeoutSeconds?, scopeFilter?, deadlineMs? }
  * Optional: x-audit-token header when the AUDIT_TOKEN env var is set.
+ *
+ * Bot-protection workarounds (Vercel runs on datacenter IPs, which
+ * Cloudflare scores harshly), configured with environment variables:
+ *   SCREAMINGFREED_USER_AGENT  "chrome" (default), "bot" or a literal UA
+ *   SCREAMINGFREED_HEADERS     extra headers, "Name: value" per line or JSON
+ *   SCREAMINGFREED_PROXY       http(s)://user:pass@host:port proxy URL
+ * The request body may also carry `requestHeaders` ("Name: value" lines),
+ * e.g. a secret header matched by a Cloudflare WAF skip rule.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { runAuditBatch } from '../src/audit/batchAuditor.js';
+import { parseHeaderLines } from '../src/crawling/requestProfile.js';
 import type { LinkScope } from '../src/crawling/types.js';
 
 const MAX_SEEDS_PER_REQUEST = 12;
 const MAX_VALUE_LENGTH = 2_048;
 const MAX_SKIP_TARGETS = 5_000;
+const MAX_REQUEST_HEADERS_LENGTH = 4_096;
 
 interface AuditRequestBody {
   [key: string]: unknown;
@@ -113,6 +123,27 @@ export default async function handler(
     return;
   }
 
+  let headers: Record<string, string>;
+  try {
+    headers = parseHeaderLines(process.env.SCREAMINGFREED_HEADERS);
+    if (typeof body.requestHeaders === 'string' && body.requestHeaders.trim().length > 0) {
+      if (body.requestHeaders.length > MAX_REQUEST_HEADERS_LENGTH) {
+        res.status(400).json({ error: 'requestHeaders is too long.' });
+        return;
+      }
+      Object.assign(headers, parseHeaderLines(body.requestHeaders));
+    }
+  } catch (error) {
+    res.status(400).json({
+      error: error instanceof Error ? error.message : 'Invalid request headers.',
+    });
+    return;
+  }
+  // Hop-by-hop / framing headers must never be forwarded from the client.
+  for (const name of ['host', 'content-length', 'connection', 'transfer-encoding']) {
+    delete headers[name];
+  }
+
   try {
     const result = await runAuditBatch({
       seedUrls,
@@ -122,6 +153,9 @@ export default async function handler(
       timeoutSeconds: clampNumber(body.timeoutSeconds, 10, 1, 15),
       scopeFilter,
       deadlineMs: clampNumber(body.deadlineMs, 35_000, 1_000, 40_000),
+      userAgent: process.env.SCREAMINGFREED_USER_AGENT,
+      headers,
+      proxyUrl: process.env.SCREAMINGFREED_PROXY,
     });
     res.status(200).json(result);
   } catch (error) {

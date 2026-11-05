@@ -155,4 +155,33 @@ describe('runAuditBatch', () => {
     expect(result.partialSeeds).toEqual([]);
     expect(result.processedSeeds).toEqual(['http://example.com/post']);
   });
+
+  it('reports bot-protected pages and links separately from broken ones', async () => {
+    const challenge = '<html><head><title>Just a moment...</title></head></html>';
+    const cf = { headers: { server: 'cloudflare', 'content-type': 'text/html' } };
+    const pool = mockAgent.get('http://example.com');
+    pool.intercept({ method: 'GET', path: '/post' }).reply(
+      200,
+      '<article><a href="/gone">a</a><a href="http://cf.example/x">b</a></article>',
+      { headers: { 'content-type': 'text/html' } },
+    );
+    pool.intercept({ method: 'GET', path: '/blocked' }).reply(403, challenge, cf);
+    pool.intercept({ method: 'HEAD', path: '/gone' }).reply(404);
+    const cfPool = mockAgent.get('http://cf.example');
+    cfPool.intercept({ method: 'HEAD', path: '/x' }).reply(403, '', cf);
+    cfPool.intercept({ method: 'GET', path: '/x' }).reply(403, challenge, cf);
+
+    const result = await runBatch({
+      seedUrls: ['http://example.com/post', 'http://example.com/blocked'],
+    });
+
+    const blockedPage = result.pages.find((page) => page.url === 'http://example.com/blocked');
+    expect(blockedPage?.fetchError).toBe('bot_protection');
+    expect(result.summary.blockedPages).toBe(1);
+    expect(result.summary.blockedLinks).toBe(1);
+    expect(result.summary.brokenLinks.map((link) => link.targetUrl)).toEqual([
+      'http://example.com/gone',
+    ]);
+  });
 });
+

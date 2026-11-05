@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bot-protection (Cloudflare etc.) workarounds:
+  - Browser-like request profile by default (Chrome UA, `Accept`,
+    `Accept-Language`, `Sec-Fetch-*`, client hints); `--user-agent`
+    (`chrome`, `bot` or literal), repeatable `-H/--header`, `--cookie`.
+  - `--proxy` / `SCREAMINGFREED_PROXY` to route requests through an HTTP(S)
+    proxy (undici `ProxyAgent`).
+  - Challenge/block detection (`cf-mitigated`, "Just a moment..." pages,
+    Cloudflare/Sucuri/Wordfence/Imperva/DataDome markers) with a new
+    `bot_protection` outcome that is reported as unverified rather than
+    broken, in the CLI summary, SQLite store and web UI.
+  - Optional real-browser fallback (`--render auto|headless|headful|off`,
+    Playwright, loaded lazily) for blocked pages and links; cookies it
+    earns (e.g. `cf_clearance`) are reused for subsequent HTTP requests.
+  - Web UI: "Extra request headers" field (e.g. a secret header for a
+    Cloudflare WAF skip rule), `bot-protected` counter and workaround hints;
+    API reads `SCREAMINGFREED_USER_AGENT`, `SCREAMINGFREED_HEADERS`,
+    `SCREAMINGFREED_PROXY`.
+  - `pages.fetch_error` column (auto-migrated) recording why a page failed.
+
+### Changed
+
+- HEAD checks answered 400/403/406 are now retried with GET (previously only
+  405/501), since many WAFs and CDNs reject HEAD.
+
 ### Fixed
 
 - A page whose fetch failed or whose article body could not be isolated

@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS pages (
     url TEXT NOT NULL UNIQUE,
     http_status INTEGER,
     selector_used TEXT,
-    fetched_at TEXT NOT NULL
+    fetched_at TEXT NOT NULL,
+    fetch_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS links (
@@ -44,6 +45,8 @@ export interface PageRecord {
   httpStatus: number | null;
   selectorUsed: string | null;
   fetchedAt: string;
+  /** Why the page could not be fetched (e.g. `bot_protection`, `timeout`). */
+  fetchError?: string | null;
 }
 
 export interface LinkRecord {
@@ -75,6 +78,7 @@ export interface BrokenLinkRow {
 export interface FailedPageRow {
   url: string;
   http_status: number | null;
+  reason: string | null;
 }
 
 export class SqliteStore {
@@ -91,13 +95,21 @@ export class SqliteStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    // Session databases created before fetch_error existed get the column.
+    const pageColumns = this.db.prepare('PRAGMA table_info(pages)').all() as Array<{
+      name: string;
+    }>;
+    if (!pageColumns.some((column) => column.name === 'fetch_error')) {
+      this.db.exec('ALTER TABLE pages ADD COLUMN fetch_error TEXT');
+    }
     this.upsertPageStatement = this.db.prepare(
-      `INSERT INTO pages (url, http_status, selector_used, fetched_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO pages (url, http_status, selector_used, fetched_at, fetch_error)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          http_status = excluded.http_status,
          selector_used = excluded.selector_used,
-         fetched_at = excluded.fetched_at`,
+         fetched_at = excluded.fetched_at,
+         fetch_error = excluded.fetch_error`,
     );
     this.selectPageIdStatement = this.db.prepare(
       'SELECT id FROM pages WHERE url = ?',
@@ -138,6 +150,7 @@ export class SqliteStore {
       record.httpStatus,
       record.selectorUsed,
       record.fetchedAt,
+      record.fetchError ?? null,
     );
     const row = this.selectPageIdStatement.get(record.url) as
       | { id: number }
@@ -191,7 +204,8 @@ export class SqliteStore {
 
   /**
    * Most frequently seen broken links (HTTP >= 400 or network failure),
-   * with the number of occurrences and an example parent page.
+   * with the number of occurrences and an example parent page. Links a
+   * bot-protection layer refused are unverified, not broken, and excluded.
    */
   getBrokenLinks(limit: number): BrokenLinkRow[] {
     return this.db
@@ -202,7 +216,8 @@ export class SqliteStore {
                 COUNT(*) AS occurrences,
                 MIN(p.url) AS example_page
          FROM links l JOIN pages p ON p.id = l.page_id
-         WHERE l.http_status IS NULL OR l.http_status >= 400
+         WHERE (l.http_status IS NULL OR l.http_status >= 400)
+           AND l.outcome <> 'bot_protection'
          GROUP BY l.target_url
          ORDER BY occurrences DESC, l.outcome ASC, l.target_url ASC
          LIMIT ?`,
@@ -221,12 +236,20 @@ export class SqliteStore {
   getFailedPages(limit: number): FailedPageRow[] {
     return this.db
       .prepare(
-        `SELECT url, http_status FROM pages
+        `SELECT url, http_status, fetch_error AS reason FROM pages
          WHERE selector_used IS NULL
          ORDER BY id
          LIMIT ?`,
       )
       .all(limit) as FailedPageRow[];
+  }
+
+  /** Link rows whose target was blocked by bot protection (unverified). */
+  countBlockedLinks(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM links WHERE outcome = 'bot_protection'")
+      .get() as { count: number };
+    return row.count;
   }
 
   getAllLinkRows(): LinkCsvRow[] {

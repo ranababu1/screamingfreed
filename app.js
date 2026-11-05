@@ -15,6 +15,7 @@
   const batchInput = byId('batch');
   const scopeInput = byId('scope');
   const tokenInput = byId('token');
+  const reqHeadersInput = byId('reqHeaders');
   const startBtn = byId('start');
   const stopBtn = byId('stop');
   const statusEl = byId('status');
@@ -77,6 +78,9 @@
   }
 
   function statusClassFor(link) {
+    if (link.outcome === 'bot_protection') {
+      return 'sb';
+    }
     if (link.httpStatus === null) {
       return 'se';
     }
@@ -90,6 +94,9 @@
   }
 
   function statusLabelFor(link) {
+    if (link.outcome === 'bot_protection') {
+      return `blocked ${link.httpStatus === null ? '' : link.httpStatus}`.trim();
+    }
     if (link.httpStatus === null) {
       return link.outcome;
     }
@@ -192,7 +199,7 @@
   }
 
   function renderCounters() {
-    const buckets = { s2: 0, s3: 0, s4: 0, se: 0 };
+    const buckets = { s2: 0, s3: 0, s4: 0, se: 0, sb: 0 };
     for (const link of state.links.values()) {
       buckets[statusClassFor(link)] += 1;
     }
@@ -203,6 +210,7 @@
       ['3xx', String(buckets.s3), 'warn'],
       ['4xx/5xx', String(buckets.s4), 'bad'],
       ['network errors', String(buckets.se), 'err'],
+      ['bot-protected', String(buckets.sb), 'blocked'],
       ['page errors', String(countFailedPages(state.pages)), 'err'],
     ];
     countersEl.textContent = '';
@@ -244,6 +252,7 @@
           concurrency: settings.concurrency,
           timeoutSeconds: settings.timeoutSeconds,
           scopeFilter: settings.scopeFilter,
+          requestHeaders: reqHeadersInput.value.trim() || undefined,
         }),
         signal: controller.signal,
       });
@@ -411,12 +420,46 @@
       summaryEl.appendChild(warning);
       summaryEl.appendChild(
         makeTable(
-          ['page', 'http status'],
+          ['page', 'http status', 'reason'],
           failedPages
             .slice(0, 20)
-            .map((page) => [page.url, page.httpStatus === null ? '' : String(page.httpStatus)]),
+            .map((page) => [
+              page.url,
+              page.httpStatus === null ? '' : String(page.httpStatus),
+              page.fetchError || '',
+            ]),
         ),
       );
+    }
+
+    const blockedPages = failedPages.filter((page) => page.fetchError === 'bot_protection').length;
+    let blockedLinks = 0;
+    for (const link of snapshot.links.values()) {
+      if (link.outcome === 'bot_protection') {
+        blockedLinks += 1;
+      }
+    }
+    if (blockedPages > 0 || blockedLinks > 0) {
+      const note = document.createElement('p');
+      note.className = 'warn';
+      note.textContent =
+        `Bot protection (e.g. Cloudflare) blocked ${blockedPages} page(s) and ${blockedLinks} ` +
+        'link check(s). Blocked links are shown as "bot_protection" (unverified), not as broken. ' +
+        'Serverless functions run on datacenter IPs, which Cloudflare treats harshly. Workarounds:';
+      summaryEl.appendChild(note);
+      const list = document.createElement('ul');
+      for (const hint of [
+        'Your own site: add a Cloudflare WAF "Skip" rule matching a secret header and enter it ' +
+          'under "Bot protection workarounds" (e.g. X-Audit-Key: …).',
+        'Set SCREAMINGFREED_PROXY on the deployment to route requests through a residential proxy.',
+        'Run the CLI from your own machine: it retries blocked pages in a real browser ' +
+          '(npm install playwright; use --render headful to solve interactive checks).',
+      ]) {
+        const item = document.createElement('li');
+        item.textContent = hint;
+        list.appendChild(item);
+      }
+      summaryEl.appendChild(list);
     }
 
     const counts = new Map();
@@ -435,6 +478,9 @@
 
     const broken = new Map();
     for (const link of snapshot.links.values()) {
+      if (link.outcome === 'bot_protection') {
+        continue;
+      }
       if (link.httpStatus !== null && link.httpStatus < 400) {
         continue;
       }

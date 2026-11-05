@@ -12,8 +12,10 @@ import pLimit from 'p-limit';
 import { isolateContent } from './extraction/contentIsolator.js';
 import { extractLinks } from './extraction/linkExtractor.js';
 import { LinkChecker } from './crawling/linkChecker.js';
+import { PlaywrightFallback, loadPlaywright } from './crawling/browserFallback.js';
+import { RequestProfile } from './crawling/requestProfile.js';
 import { TokenBucketRateLimiter } from './crawling/tokenBucket.js';
-import type { ExtractedLink, LinkScope } from './crawling/types.js';
+import type { BrowserFallback, ExtractedLink, LinkScope } from './crawling/types.js';
 import { loadSeedUrls } from './ingestion/urlLoader.js';
 import { normalizeUrl } from './ingestion/urlNormalizer.js';
 import { ConsoleReporter } from './reporting/consoleReporter.js';
@@ -30,7 +32,20 @@ export interface CrawlOptions {
   timeoutSeconds: number;
   scopeFilter?: LinkScope;
   verbose: boolean;
+  /** UA preset (`chrome`, `bot`) or literal string. Default: chrome. */
+  userAgent?: string;
+  /** Extra request headers (also used for a Cookie header). */
+  headers?: Record<string, string>;
+  /** HTTP(S) proxy URL for every request. */
+  proxyUrl?: string;
+  /**
+   * Real-browser fallback for bot-protected responses: `auto` uses it when
+   * Playwright is installed, `headless`/`headful` require it, `off` never.
+   */
+  render?: RenderMode;
 }
+
+export type RenderMode = 'auto' | 'headless' | 'headful' | 'off';
 
 interface PageResult {
   pageId: number;
@@ -72,10 +87,18 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
   // --- 2. Set up storage, HTTP machinery and UI -----------------------------
   const store = new SqliteStore(options.dbPath);
   const limiter = new TokenBucketRateLimiter(options.requestsPerSecond);
+  const profile = new RequestProfile({
+    userAgent: options.userAgent,
+    extraHeaders: options.headers,
+  });
+  const browserFallback = await setUpBrowserFallback(options, profile, reporter);
   const checker = new LinkChecker({
     limiter,
     timeoutMs: options.timeoutSeconds * 1000,
     log: (message) => reporter.verbose(message),
+    profile,
+    proxyUrl: options.proxyUrl,
+    browserFallback: browserFallback ?? undefined,
   });
   const limit = pLimit(options.concurrency);
 
@@ -113,7 +136,10 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
           let links: ExtractedLink[] = [];
           if (page.html !== null) {
             const isolated = isolateContent(page.html);
-            selectorUsed = isolated.selectorUsed;
+            selectorUsed =
+              page.via === 'BROWSER'
+                ? `browser: ${isolated.selectorUsed}`
+                : isolated.selectorUsed;
             links = extractLinks(isolated.scope, page.finalUrl);
           } else if (page.error !== null) {
             reporter.verbose(`Failed to fetch ${seed}: ${page.error}`);
@@ -123,6 +149,7 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
             httpStatus: page.httpStatus,
             selectorUsed,
             fetchedAt: new Date().toISOString(),
+            fetchError: page.html === null ? (page.error ?? 'non_html') : null,
           });
           reporter.pageDone();
           reporter.verbose(
@@ -190,6 +217,7 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
     reporter.stopBars();
     // Always release pooled sockets so the process can exit naturally.
     await checker.dispose();
+    await browserFallback?.close();
   }
 
   // --- 6. Persist, summarize, export ------------------------------------------
@@ -203,6 +231,8 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
     brokenLinks: store.getBrokenLinks(20),
     failedPageCount: store.countFailedPages(),
     failedPages: store.getFailedPages(20),
+    blockedLinkCount: store.countBlockedLinks(),
+    browserFallbackEnabled: browserFallback !== null,
   });
   if (options.exportPath !== undefined) {
     const exported = exportCsv(store.getAllLinkRows(), options.exportPath);
@@ -212,4 +242,40 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
   }
   store.close();
   return interrupted ? 130 : 0;
+}
+/**
+ * Create the browser fallback according to `--render`. In `auto` mode a
+ * missing Playwright install is not an error: blocked requests are then
+ * reported as `bot_protection` and the summary explains how to enable it.
+ */
+async function setUpBrowserFallback(
+  options: CrawlOptions,
+  profile: RequestProfile,
+  reporter: ConsoleReporter,
+): Promise<BrowserFallback | null> {
+  const mode = options.render ?? 'auto';
+  if (mode === 'off') {
+    return null;
+  }
+  const fallback = new PlaywrightFallback({
+    userAgent: profile.userAgent,
+    headful: mode === 'headful',
+    timeoutMs: Math.max(options.timeoutSeconds * 1000, 30_000),
+    proxyUrl: options.proxyUrl,
+    log: (message) => reporter.verbose(message),
+  });
+  if (mode === 'auto') {
+    // Launch lazily, only if something is actually blocked; just make sure
+    // the package can be imported.
+    try {
+      await loadPlaywright();
+      return fallback;
+    } catch {
+      reporter.verbose('Playwright not installed; browser fallback disabled.');
+      return null;
+    }
+  }
+  // Explicitly requested: fail fast with install instructions.
+  await fallback.ensureAvailable();
+  return fallback;
 }

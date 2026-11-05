@@ -12,10 +12,13 @@
 import pLimit from 'p-limit';
 import { isolateContent } from '../extraction/contentIsolator.js';
 import { extractLinks } from '../extraction/linkExtractor.js';
+import { BOT_PROTECTION_OUTCOME } from '../crawling/botProtection.js';
 import { LinkChecker } from '../crawling/linkChecker.js';
+import { RequestProfile } from '../crawling/requestProfile.js';
 import { TokenBucketRateLimiter } from '../crawling/tokenBucket.js';
 import { normalizeUrl } from '../ingestion/urlNormalizer.js';
 import type {
+  BrowserFallback,
   ExtractedLink,
   LinkCheckResult,
   LinkScope,
@@ -37,6 +40,14 @@ export interface BatchAuditOptions {
   dispatcher?: Dispatcher;
   /** Injectable clock for tests. */
   now?: () => number;
+  /** UA preset (`chrome`, `bot`) or literal string. Default: chrome. */
+  userAgent?: string;
+  /** Extra headers sent with every request. */
+  headers?: Record<string, string>;
+  /** HTTP(S) proxy for every request (ignored when `dispatcher` is set). */
+  proxyUrl?: string;
+  /** Optional real-browser fallback for bot-protected responses. */
+  browserFallback?: BrowserFallback;
 }
 
 export interface AuditedPage {
@@ -44,6 +55,8 @@ export interface AuditedPage {
   httpStatus: number | null;
   selectorUsed: string | null;
   fetchedAt: string;
+  /** Why the page could not be fetched (e.g. `bot_protection`), else null. */
+  fetchError: string | null;
 }
 
 export interface AuditedLink {
@@ -77,6 +90,10 @@ export interface BatchAuditSummary {
   totalLinks: number;
   outcomeCounts: OutcomeCount[];
   brokenLinks: BrokenLink[];
+  /** Link rows refused by bot protection (unverified, not broken). */
+  blockedLinks: number;
+  /** Pages refused by bot protection. */
+  blockedPages: number;
 }
 
 export interface BatchAuditResult {
@@ -124,6 +141,12 @@ export async function runAuditBatch(
     limiter,
     timeoutMs: options.timeoutSeconds * 1000,
     dispatcher: options.dispatcher,
+    profile: new RequestProfile({
+      userAgent: options.userAgent,
+      extraHeaders: options.headers,
+    }),
+    proxyUrl: options.proxyUrl,
+    browserFallback: options.browserFallback,
   });
   const limit = pLimit(options.concurrency);
 
@@ -146,7 +169,10 @@ export async function runAuditBatch(
           let links: ExtractedLink[] = [];
           if (page.html !== null) {
             const isolated = isolateContent(page.html);
-            selectorUsed = isolated.selectorUsed;
+            selectorUsed =
+              page.via === 'BROWSER'
+                ? `browser: ${isolated.selectorUsed}`
+                : isolated.selectorUsed;
             links = extractLinks(isolated.scope, page.finalUrl);
           }
           auditedPages.push({
@@ -154,6 +180,7 @@ export async function runAuditBatch(
             httpStatus: page.httpStatus,
             selectorUsed,
             fetchedAt: new Date().toISOString(),
+            fetchError: page.html === null ? (page.error ?? 'non_html') : null,
           });
           processedSeeds.push(seed);
           linksPerPage.set(seed, links);
@@ -261,7 +288,12 @@ function buildSummary(
     .sort((a, b) => b.count - a.count || a.outcome.localeCompare(b.outcome));
 
   const broken = new Map<string, BrokenLink>();
+  let blockedLinks = 0;
   for (const link of links) {
+    if (link.outcome === BOT_PROTECTION_OUTCOME) {
+      blockedLinks += 1;
+      continue;
+    }
     if (link.httpStatus !== null && link.httpStatus < 400) {
       continue;
     }
@@ -292,5 +324,7 @@ function buildSummary(
     totalLinks: links.length,
     outcomeCounts,
     brokenLinks,
+    blockedLinks,
+    blockedPages: pages.filter((page) => page.fetchError === BOT_PROTECTION_OUTCOME).length,
   };
 }

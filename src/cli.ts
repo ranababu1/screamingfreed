@@ -7,6 +7,8 @@
 
 import { Command } from 'commander';
 import { runCrawl } from './crawler.js';
+import type { RenderMode } from './crawler.js';
+import { parseHeaderLines } from './crawling/requestProfile.js';
 import type { LinkScope } from './crawling/types.js';
 
 function parsePositiveInt(value: string, flag: string): number {
@@ -25,6 +27,12 @@ function parsePositiveNumber(value: string, flag: string): number {
   return parsed;
 }
 
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+const RENDER_MODES: readonly RenderMode[] = ['auto', 'headless', 'headful', 'off'];
+
 const program = new Command();
 
 program
@@ -41,6 +49,23 @@ program
   .option('--internal-only', 'only check internal links')
   .option('--external-only', 'only check external links')
   .option('--verbose', 'print verbose diagnostics')
+  .option(
+    '--user-agent <ua>',
+    'User-Agent: "chrome" (default, browser-like), "bot", or a literal string',
+    process.env.SCREAMINGFREED_USER_AGENT,
+  )
+  .option('-H, --header <header>', 'extra request header "Name: value" (repeatable)', collect, [])
+  .option('--cookie <cookie>', 'Cookie header to send, e.g. "cf_clearance=..."')
+  .option(
+    '--proxy <url>',
+    'route requests through an HTTP(S) proxy (http://user:pass@host:port)',
+    process.env.SCREAMINGFREED_PROXY,
+  )
+  .option(
+    '--render <mode>',
+    'real-browser fallback for bot-protected pages: auto | headless | headful | off',
+    'auto',
+  )
   .action(async (options) => {
     if (options.internalOnly && options.externalOnly) {
       throw new Error('--internal-only and --external-only are mutually exclusive');
@@ -52,6 +77,17 @@ program
     if (options.externalOnly) {
       scopeFilter = 'external';
     }
+    const render = String(options.render) as RenderMode;
+    if (!RENDER_MODES.includes(render)) {
+      throw new Error(`--render expects one of ${RENDER_MODES.join(', ')}`);
+    }
+    const headers = {
+      ...parseHeaderLines(process.env.SCREAMINGFREED_HEADERS),
+      ...parseHeaderLines(options.header as string[]),
+    };
+    if (typeof options.cookie === 'string' && options.cookie.length > 0) {
+      headers.cookie = options.cookie;
+    }
     const exitCode = await runCrawl({
       urls: options.urls,
       file: options.file,
@@ -62,6 +98,10 @@ program
       timeoutSeconds: parsePositiveInt(options.timeout, '--timeout'),
       scopeFilter,
       verbose: options.verbose === true,
+      userAgent: options.userAgent,
+      headers,
+      proxyUrl: options.proxy,
+      render,
     });
     // Set the code and let the event loop drain naturally: calling
     // process.exit() while pooled sockets are tearing down can crash on
