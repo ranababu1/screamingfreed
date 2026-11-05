@@ -8,7 +8,7 @@ for any other site).
 ## Usage
 
 ```bash
-screamingfreed [--urls <list>] [--file <path>] [--rps 2] [--concurrency 10]
+screamingfreed [--urls <list>] [--file <path>] [--sitemap <url>] [--rps 2] [--concurrency 10]
                [--timeout 15] [--db ScreamingFreedSession.db] [--export report.csv]
                [--internal-only | --external-only] [--verbose]
                [--user-agent chrome|bot|<ua>] [-H "Name: value"]... [--cookie <c>]
@@ -20,6 +20,12 @@ Examples:
 ```bash
 # Audit specific pages and export a CSV report
 screamingfreed --urls "https://example.com/post-1,https://example.com/post-2" --export report.csv
+
+# Audit every page listed in a sitemap (index files and .xml.gz are followed)
+screamingfreed --sitemap https://example.com/sitemap_index.xml
+
+# Or give just the site: the sitemap is found via robots.txt or the usual paths
+screamingfreed --sitemap example.com
 
 # Read seed URLs from a file (one URL per line; for .csv the first column is used)
 screamingfreed --file seeds.csv --verbose
@@ -34,6 +40,7 @@ cat seeds.txt | screamingfreed
 | --- | --- | --- |
 | `--urls <list>` | - | Seed URLs, comma or newline separated (takes precedence over `--file`) |
 | `--file <path>` | - | Path to a `.txt` or `.csv` file with seed URLs (one per line, first CSV column used) |
+| `-s, --sitemap <url>` | - | Audit the pages listed in a sitemap: a sitemap URL (`.xml`, `.xml.gz`, text, or a sitemap index), or a site address to discover it from `robots.txt`, `/sitemap.xml`, `/sitemap_index.xml`, `/wp-sitemap.xml`. Combines with `--urls` / `--file` |
 | `--rps <rate>` | `2` | Maximum requests per second per host |
 | `--concurrency <n>` | `10` | Maximum concurrent requests overall |
 | `--timeout <seconds>` | `15` | Per-request timeout in seconds |
@@ -48,7 +55,7 @@ cat seeds.txt | screamingfreed
 | `--proxy <url>` | - | Route all requests through an HTTP(S) proxy. Env: `SCREAMINGFREED_PROXY` |
 | `--render <mode>` | `auto` | Real-browser fallback for bot-protected responses: `auto` (when Playwright is installed), `headless`, `headful` (visible window, solve checks by hand), `off` |
 
-When neither `--urls` nor `--file` is given, seed URLs are read from stdin.
+When none of `--urls`, `--file` or `--sitemap` is given, seed URLs are read from stdin.
 
 Pressing `Ctrl+C` once stops scheduling new requests, flushes pending database
 writes and prints the summary; pressing it twice exits immediately.
@@ -117,8 +124,11 @@ npm run dev:cli -- --file allurls.csv   # run the CLI without building first
 
 ## Web UI on Vercel
 
-A minimal web UI is included: upload (or paste) a CSV/TXT of seed URLs in the
-browser and download the resulting CSV/JSON report.
+A web UI is included: upload a CSV/TXT of seed URLs, paste URLs, or fetch a
+sitemap (optionally filtered to URLs containing e.g. `/blog/`), then download
+the resulting CSV/JSON report. Sitemaps are fetched server-side by
+`POST /api/sitemap` (browsers cannot read other sites' sitemaps because of
+CORS); it returns up to 50,000 URLs — use the CLI for larger sites.
 
 The browser parses the file, chunks the list into small batches and calls
 `POST /api/audit` — a Vercel serverless function (`api/audit.ts`) that runs the

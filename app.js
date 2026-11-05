@@ -16,6 +16,11 @@
   const inputFileEl = byId('inputFile');
   const inputPasteEl = byId('inputPaste');
   const urlsInput = byId('urls');
+  const inputSitemapEl = byId('inputSitemap');
+  const sitemapForm = byId('sitemapForm');
+  const sitemapUrlInput = byId('sitemapUrl');
+  const sitemapFetchBtn = byId('sitemapFetch');
+  const sitemapResultEl = byId('sitemapResult');
   const rpsInput = byId('rps');
   const concurrencyInput = byId('concurrency');
   const timeoutInput = byId('timeout');
@@ -64,6 +69,9 @@
   let fileText = '';
   let fileIsCsv = false;
   let inputMode = 'file';
+  /** Page URLs found by the last sitemap fetch, and the include filter. */
+  let sitemapUrls = [];
+  let sitemapFilter = '';
   let scope = '';
   let currentSnapshot = null;
   let activeTab = 'overview';
@@ -254,8 +262,11 @@
     inputMode = mode;
     inputFileEl.hidden = mode !== 'file';
     inputPasteEl.hidden = mode !== 'paste';
+    inputSitemapEl.hidden = mode !== 'sitemap';
     if (mode === 'paste') {
       urlsInput.focus();
+    } else if (mode === 'sitemap' && sitemapUrls.length === 0) {
+      sitemapUrlInput.focus();
     }
     updateCountHint();
   });
@@ -331,6 +342,8 @@
           entries.push(fileIsCsv ? firstCsvColumn(line) : line);
         }
       }
+    } else if (inputMode === 'sitemap') {
+      entries = filteredSitemapUrls();
     } else {
       entries = urlsInput.value.split(/[\n,]+/);
     }
@@ -358,13 +371,160 @@
     const count = parseSeedList().length;
     countHint.textContent = '';
     if (count === 0) {
-      countHint.textContent = inputMode === 'file'
-        ? 'Upload a file to get started.'
-        : 'Paste one URL per line.';
+      countHint.textContent = EMPTY_HINTS[inputMode];
       startLabel.textContent = 'Start audit';
     } else {
       countHint.append(el('b', { text: plural(count, 'page') }), ' ready to audit');
       startLabel.textContent = `Audit ${plural(count, 'page')}`;
+    }
+  }
+
+  const EMPTY_HINTS = {
+    file: 'Upload a file to get started.',
+    paste: 'Paste one URL per line.',
+    sitemap: 'Fetch a sitemap to get started.',
+  };
+  const MISSING_HINTS = {
+    file: 'Upload a .csv or .txt file with URLs first.',
+    paste: 'Paste at least one URL first.',
+    sitemap: 'Fetch a sitemap first, or loosen the URL filter.',
+  };
+
+  // ---------- sitemap --------------------------------------------------------
+
+  function filteredSitemapUrls() {
+    const terms = sitemapFilter
+      .split(',')
+      .map((term) => term.trim().toLowerCase())
+      .filter((term) => term.length > 0);
+    if (terms.length === 0) {
+      return sitemapUrls;
+    }
+    return sitemapUrls.filter((url) => {
+      const lower = url.toLowerCase();
+      return terms.some((term) => lower.includes(term));
+    });
+  }
+
+  function setSitemapBusy(busy) {
+    sitemapFetchBtn.disabled = busy;
+    sitemapUrlInput.disabled = busy;
+    const label = sitemapFetchBtn.querySelector('.label');
+    label.textContent = busy ? 'Fetching…' : 'Fetch URLs';
+    const iconEl = sitemapFetchBtn.querySelector('svg');
+    const existing = sitemapFetchBtn.querySelector('.spinner');
+    if (busy && !existing) {
+      sitemapFetchBtn.prepend(el('span', { class: 'spinner', 'aria-hidden': 'true' }));
+    } else if (!busy && existing) {
+      existing.remove();
+    }
+    if (iconEl) {
+      iconEl.style.display = busy ? 'none' : '';
+    }
+  }
+
+  sitemapForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const target = sitemapUrlInput.value.trim();
+    if (target === '' || state) {
+      sitemapUrlInput.focus();
+      return;
+    }
+    setSitemapBusy(true);
+    sitemapResultEl.textContent = '';
+    sitemapUrls = [];
+    updateCountHint();
+    try {
+      const response = await fetch('/api/sitemap', {
+        method: 'POST',
+        headers: requestHeaders(),
+        body: JSON.stringify({
+          sitemapUrl: target,
+          requestHeaders: reqHeadersInput.value.trim() || undefined,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload === null) {
+        throw new Error((payload && payload.error) || `Request failed with HTTP ${response.status}`);
+      }
+      sitemapUrls = payload.urls;
+      sitemapFilter = '';
+      renderSitemapResult(payload);
+    } catch (error) {
+      sitemapResultEl.appendChild(
+        banner('error', 'Could not read the sitemap', error.message,
+          /bot protection/i.test(error.message)
+            ? ['Add a header for a Cloudflare WAF “Skip” rule under Settings → Cloudflare & bot protection, or download the sitemap in your browser and use “Upload file”.']
+            : null),
+      );
+    } finally {
+      setSitemapBusy(false);
+      updateCountHint();
+    }
+  });
+
+  function renderSitemapResult(result) {
+    sitemapResultEl.textContent = '';
+    const failed = result.sitemaps.filter((info) => info.error !== null);
+    if (result.urls.length === 0) {
+      sitemapResultEl.appendChild(
+        banner('warn', 'No page URLs found',
+          failed.length > 0 ? `${plural(failed.length, 'sitemap')} could not be read.` : 'The sitemap is empty.'),
+      );
+    }
+    const countLine = el('span', { class: 'sub' });
+    const updateCountLine = () => {
+      const shown = filteredSitemapUrls().length;
+      countLine.textContent = shown === result.urls.length
+        ? `from ${plural(result.sitemaps.length, 'sitemap file')}`
+        : `${shown.toLocaleString()} match the filter · from ${plural(result.sitemaps.length, 'sitemap file')}`;
+    };
+    updateCountLine();
+
+    const filterInput = el('input', {
+      type: 'search',
+      placeholder: 'Only include URLs containing… (e.g. /blog/, /docs/)',
+      'aria-label': 'Only include URLs containing',
+    });
+    filterInput.addEventListener('input', () => {
+      sitemapFilter = filterInput.value;
+      updateCountLine();
+      updateCountHint();
+    });
+
+    const list = el('ul', null, result.sitemaps.map((info) =>
+      el('li', null, [
+        el('span', {
+          class: `pill ${info.error ? 'bad' : 'ok'}`,
+          text: info.error ? 'Error' : info.kind === 'index' ? 'Index' : String(info.entries),
+        }),
+        el('span', { class: 'u', text: info.error ? `${info.url} — ${info.error}` : info.url }),
+      ])));
+
+    if (result.urls.length > 0) {
+      sitemapResultEl.appendChild(
+        el('div', { class: 'found' }, [
+          el('div', { class: 'found-head' }, [
+            el('div', { class: 'ico' }, icon(ICONS.check, 18)),
+            el('div', null, [el('b', { text: `${plural(result.urls.length, 'page')} found` }), countLine]),
+          ]),
+          filterInput,
+          result.truncated
+            ? el('p', { class: 'sub', style: 'margin:0', text: 'The sitemap is very large; the list was cut off at the size limit. Use the CLI (--sitemap) for the full list.' })
+            : null,
+          el('details', null, [
+            el('summary', {
+              text: `Sitemap files read (${result.sitemaps.length})${failed.length > 0 ? ` · ${failed.length} failed` : ''}`,
+            }),
+            list,
+          ]),
+        ]),
+      );
+    } else if (result.sitemaps.length > 0) {
+      sitemapResultEl.appendChild(el('div', { class: 'found' }, el('details', { open: true }, [
+        el('summary', { text: `Sitemap files read (${result.sitemaps.length})` }),
+        list,
+      ])));
     }
   }
 
@@ -562,6 +722,8 @@
     startBtn.disabled = running;
     stopBtn.hidden = !running;
     fileInput.disabled = running;
+    sitemapUrlInput.disabled = running;
+    sitemapFetchBtn.disabled = running;
     urlsInput.disabled = running;
   }
 
@@ -571,9 +733,7 @@
     }
     const seeds = parseSeedList();
     if (seeds.length === 0) {
-      countHint.textContent = inputMode === 'file'
-        ? 'Upload a .csv or .txt file with URLs first.'
-        : 'Paste at least one URL first.';
+      countHint.textContent = MISSING_HINTS[inputMode];
       countHint.style.color = 'var(--bad)';
       setTimeout(() => {
         countHint.style.color = '';

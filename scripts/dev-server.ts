@@ -1,7 +1,7 @@
 // Local development server for the ScreamingFreed web UI.
 //
 // Serves the static UI (index.html + app.js) from the project root and
-// exposes POST /api/audit by importing api/audit.ts directly, mimicking
+// exposes POST /api/audit and /api/sitemap by importing api/*.ts directly, mimicking
 // how the Vercel runtime invokes the handler (JSON body pre-parsing and
 // Express-like res.status()/res.json() helpers).
 //
@@ -44,15 +44,21 @@ function augmentResponse(res: ServerResponse): VercelResponse {
   return augmented;
 }
 
-const { default: handler } = await import(
-  pathToFileURL(join(ROOT, 'api', 'audit.ts')).href
-);
+type Handler = (req: VercelRequest, res: VercelResponse) => Promise<void>;
+const API_HANDLERS = new Map<string, Handler>();
+for (const name of ['audit', 'sitemap']) {
+  const module = (await import(pathToFileURL(join(ROOT, 'api', `${name}.ts`)).href)) as {
+    default: Handler;
+  };
+  API_HANDLERS.set(`/api/${name}`, module.default);
+}
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   try {
     const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
 
-    if (url.pathname === '/api/audit') {
+    const handler = API_HANDLERS.get(url.pathname);
+    if (handler !== undefined) {
       const vercelResponse = augmentResponse(res);
       const chunks: Buffer[] = [];
       for await (const chunk of req) {

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Sitemap input: a "Sitemap" tab in the web UI (with an include filter such as
+  `/blog/`) backed by a new `POST /api/sitemap` endpoint, and a
+  `--sitemap <url>` CLI option. Sitemap indexes are followed recursively,
+  `.xml.gz` and text sitemaps are supported, and a bare site address is
+  resolved via `robots.txt` and the conventional sitemap locations.
+
 - Bot-protection (Cloudflare etc.) workarounds:
   - Browser-like request profile by default (Chrome UA, `Accept`,
     `Accept-Language`, `Sec-Fetch-*`, client hints); `--user-agent`

@@ -169,7 +169,23 @@
     .file-chip .meta { min-width: 0; max-width: 100%; }
     .file-chip .meta b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    textarea, input[type="number"], input[type="password"], input[type="search"], select {
+    .sitemap-box { min-height: 188px; display: grid; align-content: start; gap: 12px; }
+    .sitemap-box > p { margin: 0; }
+    .sitemap-row { display: flex; gap: 10px; }
+    .sitemap-row input { flex: 1; min-width: 0; }
+    .sitemap-row .btn { flex: none; }
+    .found {
+      border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); padding: 14px 16px;
+      display: grid; gap: 12px;
+    }
+    .found-head { display: flex; align-items: center; gap: 12px; }
+    .found-head .ico { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex: none; background: var(--ok-soft); color: var(--ok); }
+    .found-head b { display: block; }
+    .found details summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
+    .found ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; max-height: 180px; overflow: auto; font-size: 12.5px; }
+    .found li { display: flex; gap: 8px; align-items: baseline; }
+    .found li span.u { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
+    textarea, input[type="text"], input[type="number"], input[type="password"], input[type="search"], select {
       width: 100%; padding: 10px 12px; border-radius: 10px; outline: none;
       background: var(--surface); border: 1px solid var(--border-strong);
       transition: border-color .15s, box-shadow .15s;
@@ -367,6 +383,7 @@
       .bar-row { grid-template-columns: 96px 1fr 40px; }
       .health { flex-direction: column; align-items: flex-start; }
       .actions .btn.primary { flex: 1; }
+      .sitemap-row { flex-direction: column; }
     }
     @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
@@ -401,6 +418,7 @@
             <div class="seg" role="tablist" aria-label="Input method" id="inputSeg">
               <button type="button" role="tab" aria-selected="true" data-input="file">Upload file</button>
               <button type="button" role="tab" aria-selected="false" data-input="paste">Paste URLs</button>
+              <button type="button" role="tab" aria-selected="false" data-input="sitemap">Sitemap</button>
             </div>
           </div>
 
@@ -422,6 +440,19 @@
 
           <div id="inputPaste" hidden>
             <textarea id="urls" spellcheck="false" aria-label="URLs to audit" placeholder="https://example.com/blog/first-post/&#10;https://example.com/blog/second-post/&#10;https://example.com/docs/getting-started/"></textarea>
+          </div>
+
+          <div id="inputSitemap" class="sitemap-box" hidden>
+            <form class="sitemap-row" id="sitemapForm">
+              <input type="text" id="sitemapUrl" inputmode="url" autocomplete="url" spellcheck="false"
+                aria-label="Sitemap URL or site address" placeholder="example.com/sitemap.xml or example.com">
+              <button class="btn" type="submit" id="sitemapFetch">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></svg>
+                <span class="label">Fetch URLs</span>
+              </button>
+            </form>
+            <p class="sub" id="sitemapHint">Sitemap index files, <code>.xml.gz</code> and text sitemaps are supported. Enter just a domain and the sitemap is found via <code>robots.txt</code> or the usual locations.</p>
+            <div id="sitemapResult"></div>
           </div>
 
           <div class="actions">

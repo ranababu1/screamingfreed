@@ -16,6 +16,7 @@ import { PlaywrightFallback, loadPlaywright } from './crawling/browserFallback.j
 import { RequestProfile } from './crawling/requestProfile.js';
 import { TokenBucketRateLimiter } from './crawling/tokenBucket.js';
 import type { BrowserFallback, ExtractedLink, LinkScope } from './crawling/types.js';
+import { loadSitemap } from './ingestion/sitemapLoader.js';
 import { loadSeedUrls } from './ingestion/urlLoader.js';
 import { normalizeUrl } from './ingestion/urlNormalizer.js';
 import { ConsoleReporter } from './reporting/consoleReporter.js';
@@ -25,6 +26,8 @@ import { SqliteStore } from './storage/sqliteStore.js';
 export interface CrawlOptions {
   urls?: string;
   file?: string;
+  /** Sitemap URL or site address whose sitemap lists the seed pages. */
+  sitemap?: string;
   dbPath: string;
   exportPath?: string;
   requestsPerSecond: number;
@@ -63,7 +66,35 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
   const reporter = new ConsoleReporter(options.verbose);
 
   // --- 1. Ingest and normalize seed URLs -----------------------------------
-  const rawSeeds = await loadSeedUrls({ urls: options.urls, file: options.file });
+  const hasListSource =
+    (options.urls ?? '').trim().length > 0 || (options.file ?? '').trim().length > 0;
+  const rawSeeds =
+    hasListSource || options.sitemap === undefined
+      ? await loadSeedUrls({ urls: options.urls, file: options.file })
+      : [];
+  if (options.sitemap !== undefined) {
+    reporter.info(`Reading sitemap ${options.sitemap}...`);
+    const sitemap = await loadSitemap(options.sitemap, {
+      userAgent: options.userAgent,
+      headers: options.headers,
+      proxyUrl: options.proxyUrl,
+      timeoutMs: options.timeoutSeconds * 1000,
+      deadlineMs: 5 * 60_000,
+      maxUrls: 1_000_000,
+      maxSitemaps: 10_000,
+      log: (message) => reporter.verbose(message),
+    });
+    for (const info of sitemap.sitemaps) {
+      if (info.error !== null) {
+        reporter.warn(`Sitemap ${info.url}: ${info.error}`);
+      }
+    }
+    reporter.info(
+      `Found ${sitemap.urls.length} page URL(s) in ${sitemap.sitemaps.length} sitemap file(s)` +
+        (sitemap.truncated ? ' (limit reached; list truncated)' : ''),
+    );
+    rawSeeds.push(...sitemap.urls);
+  }
   const seeds: string[] = [];
   const seenSeeds = new Set<string>();
   for (const raw of rawSeeds) {
@@ -79,7 +110,7 @@ export async function runCrawl(options: CrawlOptions): Promise<number> {
   }
   if (seeds.length === 0) {
     reporter.error(
-      'No valid seed URLs to crawl. Provide http(s) URLs via --urls, --file, or stdin.',
+      'No valid seed URLs to crawl. Provide http(s) URLs via --urls, --file, --sitemap, or stdin.',
     );
     return 1;
   }

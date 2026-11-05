@@ -41,6 +41,7 @@ program
   .version('1.0.0')
   .option('-u, --urls <urls>', 'comma or newline separated seed URLs (takes precedence over --file)')
   .option('-f, --file <path>', 'path to a .txt or .csv file with seed URLs (one per line, first CSV column used)')
+  .option('-s, --sitemap <url>', 'audit the pages listed in a sitemap (sitemap URL, or a site address to auto-discover it)')
   .option('--rps <rate>', 'maximum requests per second per host', '2')
   .option('--concurrency <n>', 'maximum concurrent requests overall', '10')
   .option('--timeout <seconds>', 'per-request timeout in seconds', '15')
@@ -91,6 +92,7 @@ program
     const exitCode = await runCrawl({
       urls: options.urls,
       file: options.file,
+      sitemap: options.sitemap,
       dbPath: options.db,
       exportPath: options.export,
       requestsPerSecond: parsePositiveNumber(options.rps, '--rps'),
