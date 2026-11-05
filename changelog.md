@@ -30,10 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Redesigned web UI: light/dark themes (follows the system, with a toggle),
+  drag-and-drop upload, live progress with ETA and stat tiles, and a tabbed
+  results view (overview with link-health score and status breakdown,
+  searchable Broken / All links / Pages tables, status filter).
+  Links that only work through a redirect are shown as "Redirected".
+
 - HEAD checks answered 400/403/406 are now retried with GET (previously only
   405/501), since many WAFs and CDNs reject HEAD.
 
 ### Fixed
+
+- Web UI CSV export left most columns empty (snake_case headers were looked
+  up on camelCase result fields).
 
 - A page whose fetch failed or whose article body could not be isolated
   (e.g. blocked by the target site's firewall/bot protection) was silently

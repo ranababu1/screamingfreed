@@ -221,7 +221,7 @@
     if (savedTheme === 'light' || savedTheme === 'dark') {
       root.setAttribute('data-theme', savedTheme);
     }
-  } catch (error) {
+  } catch {
     // Storage unavailable (private mode); fall back to the system theme.
   }
   byId('themeToggle').addEventListener('click', () => {
@@ -231,8 +231,8 @@
     root.setAttribute('data-theme', next);
     try {
       localStorage.setItem('sf-theme', next);
-    } catch (error) {
-      // ignore
+    } catch {
+      // Storage unavailable; the theme still applies for this visit.
     }
   });
 
